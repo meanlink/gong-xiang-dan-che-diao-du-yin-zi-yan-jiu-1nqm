@@ -2,8 +2,9 @@ import time, json
 from sqlalchemy import select, func
 from src.config.database import Session
 from migrations.initial import migrate
-from src.models import User, Dataset, Job, Report, Delivery, Audit
+from src.models import User, Dataset, Job, Report, Delivery, Audit, ReconBatch, ReconRelease
 from src.services.business import metadata, seed_records, analyze
+from src.services import recon
 from src.services.reports import deliver
 from src.utils.security import hash_password
 from src.utils.serialization import checksum
@@ -21,6 +22,17 @@ def seed():
             rows=seed_records()
             d=Dataset(name=m['dataset_name'],source=m['short']+'-202611.csv',records=rows,checksum=checksum(rows),created_at=time.time())
             db.add(d); db.flush()
+        # 日批对账演示：两来源同口径上报 288 条，无差异，经管理员确认后切换为可研究批次
+        demo_key='2026-11-16'
+        if not db.scalar(select(ReconBatch).where(ReconBatch.batch_key==demo_key)):
+            rows=seed_records()
+            admin=db.scalar(select(User).where(User.role=='admin'))
+            recon.upload_source(db,demo_key,'device','BL_device_20261116.csv',rows)
+            recon.upload_source(db,demo_key,'console','dispatch_console_20261116.json',rows)
+            batch=db.scalar(select(ReconBatch).where(ReconBatch.batch_key==demo_key))
+            recon.confirm(db,batch,admin.email,'演示日批：两来源核对一致，一次性切换')
+            db.add(Audit(actor='seed',action='demo.recon',detail={'batch':batch.id},at=time.time()))
+            db.flush()
         if not db.scalar(select(Job).where(Job.name=='基线复核 · '+m['name'])):
             params={p['key']:p['default'] for p in m.get('parameters',[])}
             result=analyze(d.records,params)
